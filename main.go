@@ -2,69 +2,84 @@ package main
 
 /*
 Author: Bastien Faivre
-Project: EPFL, DCL, Performance and Security Evaluation of Layer 2 Blockchain
-		 Systems
+Project: EPFL, DCL, Performance and Security Evaluation of Layer 2 Blockchain Systems
 Date: September 2023
 */
 
 import (
+	"censorship-proxy/configuration"
+	"censorship-proxy/connection"
+	"censorship-proxy/logs"
 	"fmt"
-	"io"
 	"net"
 	"os"
 )
 
-func handleConnection(clientConn net.Conn, targetAddress string) {
-	defer clientConn.Close()
-	// connect to target
-	targetConn, err := net.Dial("tcp", targetAddress)
+// configListener listens for config updates
+func configListener(loggers *logs.Loggers, configAddress string, configManager *configuration.ConfigManager) {
+	listener, err := net.Listen("tcp", configAddress)
 	if err != nil {
-		fmt.Println("Error connecting to target: " + err.Error())
-		return
-	}
-	defer targetConn.Close()
-	fmt.Println("Connected to target " + targetConn.RemoteAddr().String())
-	// forward data
-	closeChannel := make(chan bool)
-	go func() {
-		io.Copy(targetConn, clientConn)
-		closeChannel <- true
-	}()
-	go func() {
-		io.Copy(clientConn, targetConn)
-		closeChannel <- true
-	}()
-	<-closeChannel
-	fmt.Println("Connection closed")
-}
-
-func listen(listeningAddress string, targetAddress string) {
-	listener, err := net.Listen("tcp", listeningAddress)
-	if err != nil {
-		panic("Error listening: " + err.Error())
+		loggers.Error.Println("Error listening for config updates:", err)
+		panic(err)
 	}
 	defer listener.Close()
-	// listen for incoming connections
+	loggers.Info.Println("Listening for config updates on", configAddress)
+	// listen for connections
 	for {
-		clientConn, err := listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error accepting new connection: " + err.Error())
-			continue
+			loggers.Error.Println("Error accepting new connection:", err)
 		}
-		fmt.Println("New connection from " + clientConn.RemoteAddr().String())
-		// handle connections in a new goroutine
-		go handleConnection(clientConn, targetAddress)
+		loggers.Info.Println("New connection from", conn.RemoteAddr())
+		// handle the connection
+		go connection.HandleConfigConnection(conn, configManager)
+	}
+}
+
+// clientListener listens for client connections
+func clientListener(loggers *logs.Loggers, clientAddress string, configManager *configuration.ConfigManager) {
+	listener, err := net.Listen("tcp", clientAddress)
+	if err != nil {
+		loggers.Error.Println("Error listening for client connections:", err)
+		panic(err)
+	}
+	defer listener.Close()
+	loggers.Info.Println("Listening for client connections on", clientAddress)
+	// listen for connections
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			loggers.Error.Println("Error accepting new connection:", err)
+		}
+		loggers.Info.Println("New connection from", conn.RemoteAddr())
+		// get the configuration
+		config := configManager.GetConfig()
+		// handle the connection
+		go connection.HandleClientConnection(conn, config)
 	}
 }
 
 func main() {
 	// read arguments
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: proxy <listening address> <target address>")
+	if len(os.Args) != 4 {
+		fmt.Println("Usage: proxy <config address> <client address> <target address>")
 		os.Exit(1)
 	}
-	listeningAddress := os.Args[1]
-	targetAddress := os.Args[2]
-	// listen
-	listen(listeningAddress, targetAddress)
+	configAddress := os.Args[1]
+	clientAddress := os.Args[2]
+	targetAddress := os.Args[3]
+	// get loggers
+	clientLoggers, configLoggers, err := logs.GetLoggers("")
+	if err != nil {
+		panic("Error getting loggers: " + err.Error())
+	}
+	// initialize loggers
+	connection.InitClientLoggers(clientLoggers)
+	connection.InitConfigLoggers(configLoggers)
+	// create a configuration manager
+	configManager := configuration.NewConfigManager(targetAddress)
+	// listen for config updates
+	go configListener(configLoggers, configAddress, configManager)
+	// listen for client connections
+	clientListener(clientLoggers, clientAddress, configManager)
 }
