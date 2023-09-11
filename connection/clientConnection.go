@@ -7,18 +7,20 @@ Date: September 2023
 */
 
 import (
+	"bufio"
+	"bytes"
 	"censorship-proxy/configuration"
 	"censorship-proxy/logs"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net"
+	"net/http"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
 )
-
-//------------------------------------------------------------------------------
-// Constants
-//------------------------------------------------------------------------------
-
-// size of the buffer used to read data
-const CLIENT_BUFFER_SIZE = 1048576 // 1MB
 
 //------------------------------------------------------------------------------
 // Private variables
@@ -39,26 +41,71 @@ func proxyTargetToClient(closeChannel chan bool, clientConn net.Conn, targetConn
 
 // proxyClientToTarget proxies data from the client to the target if it is not censored
 func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn net.Conn, config configuration.Config) {
+	clientReader := bufio.NewReader(clientConn)
 	// check censorship on each message
 	for {
-		// read data
-		data := make([]byte, CLIENT_BUFFER_SIZE)
-		n, err := clientConn.Read(data)
+		// read http request
+		request, err := http.ReadRequest(clientReader)
 		if err != nil {
-			clientLoggers.Error.Println("Error reading data:", err)
-			closeChannel <- true
-			return
+			clientLoggers.Error.Println("Error reading request:", err)
+			break
 		}
-		// TODO: check censorship
-		clientLoggers.Info.Println("Received data:", string(data[:n]))
-		// write data
-		_, err = targetConn.Write(data[:n])
+		if len(config.CensoredAddresses) > 0 {
+			// read body
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				clientLoggers.Error.Println("Error reading body:", err)
+				break
+			}
+			request.Body = io.NopCloser(bytes.NewBuffer(body))
+			// unmarshal body
+			var bodyMap map[string]interface{}
+			err = json.Unmarshal(body, &bodyMap)
+			if err != nil {
+				clientLoggers.Error.Println("Error unmarshalling body:", err)
+				break
+			}
+			// check censorship
+			switch bodyMap["method"] {
+			case "eth_sendTransaction":
+				// TODO: implement censorship
+			case "eth_sendRawTransaction":
+				signedTxn := bodyMap["params"].([]interface{})[0]
+				// remove the 0x prefix if present
+				if signedTxn.(string)[:2] == "0x" {
+					signedTxn = signedTxn.(string)[2:]
+				}
+				raw, err := hex.DecodeString(signedTxn.(string))
+				if err != nil {
+					clientLoggers.Error.Println("Error decoding signed transaction:", err)
+					break
+				}
+				var tx *types.Transaction
+				rlp.DecodeBytes(raw, &tx)
+				signer := types.NewEIP155Signer(tx.ChainId())
+				sender, err := signer.Sender(tx)
+				if err != nil {
+					clientLoggers.Error.Println("Error getting sender:", err)
+					break
+				}
+				// check if the sender is censored
+				for _, address := range config.CensoredAddresses {
+					if strings.EqualFold(strings.ToLower(sender.Hex()), strings.ToLower(address)) {
+						clientLoggers.Warning.Println("Censored transaction from", sender.Hex())
+						break
+					}
+				}
+			default:
+			}
+		}
+		// write http request to target
+		err = request.Write(targetConn)
 		if err != nil {
-			clientLoggers.Error.Println("Error writing data to target:", err)
-			closeChannel <- true
-			return
+			clientLoggers.Error.Println("Error writing request:", err)
+			break
 		}
 	}
+	closeChannel <- true
 }
 
 //------------------------------------------------------------------------------
