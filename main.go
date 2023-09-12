@@ -52,10 +52,8 @@ func clientListener(loggers *logs.Loggers, clientAddress string, configManager *
 			loggers.Error.Println("Error accepting new connection:", err)
 		}
 		loggers.Info.Println("New connection from", conn.RemoteAddr())
-		// get the configuration
-		config := configManager.GetConfig()
 		// handle the connection
-		go connection.HandleClientConnection(conn, config)
+		go connection.HandleClientConnection(conn, configManager)
 	}
 }
 

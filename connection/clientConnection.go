@@ -40,7 +40,7 @@ func proxyTargetToClient(closeChannel chan bool, clientConn net.Conn, targetConn
 }
 
 // proxyClientToTarget proxies data from the client to the target if it is not censored
-func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn net.Conn, config configuration.Config) {
+func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn net.Conn, configManager *configuration.ConfigManager) {
 	clientReader := bufio.NewReader(clientConn)
 	// check censorship on each message
 	for {
@@ -50,6 +50,8 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 			clientLoggers.Error.Println("Error reading request:", err)
 			break
 		}
+		// get config
+		config := configManager.GetConfig()
 		if len(config.CensoredAddresses) > 0 {
 			// read body
 			body, err := io.ReadAll(request.Body)
@@ -88,9 +90,17 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 					clientLoggers.Error.Println("Error getting sender:", err)
 					break
 				}
+				senderFormatted := strings.ToLower(sender.Hex())
+				if senderFormatted[:2] == "0x" {
+					senderFormatted = senderFormatted[2:]
+				}
 				// check if the sender is censored
 				for _, address := range config.CensoredAddresses {
-					if strings.EqualFold(strings.ToLower(sender.Hex()), strings.ToLower(address)) {
+					addressFormatted := strings.ToLower(address)
+					if addressFormatted[:2] == "0x" {
+						addressFormatted = addressFormatted[2:]
+					}
+					if strings.EqualFold(senderFormatted, addressFormatted) {
 						clientLoggers.Warning.Println("Censored transaction from", sender.Hex())
 						break
 					}
@@ -118,15 +128,10 @@ func InitClientLoggers(loggers *logs.Loggers) {
 }
 
 // HandleClientConnection handles a new client connection
-func HandleClientConnection(conn net.Conn, config configuration.Config) {
+func HandleClientConnection(conn net.Conn, configManager *configuration.ConfigManager) {
 	defer conn.Close()
-	// check if the configuration is valid
-	if !config.IsValid() {
-		clientLoggers.Error.Println("Invalid configuration")
-		return
-	}
 	// connect to the target
-	targetConn, err := net.Dial("tcp", config.TargetAddress)
+	targetConn, err := net.Dial("tcp", configManager.GetConfig().TargetAddress)
 	if err != nil {
 		clientLoggers.Error.Println("Error connecting to target:", err)
 		return
@@ -134,7 +139,7 @@ func HandleClientConnection(conn net.Conn, config configuration.Config) {
 	// start goroutines to handle data transmission in both directions
 	closeChannel := make(chan bool)
 	go proxyTargetToClient(closeChannel, conn, targetConn)
-	go proxyClientToTarget(closeChannel, conn, targetConn, config)
+	go proxyClientToTarget(closeChannel, conn, targetConn, configManager)
 	// wait for the goroutines to finish
 	<-closeChannel
 	clientLoggers.Info.Println("Connection of client", conn.RemoteAddr(), "closed")
