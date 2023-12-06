@@ -36,6 +36,7 @@ var clientLoggers *logs.Loggers
 // proxyTargetToClient proxies data from the target to the client
 func proxyTargetToClient(closeChannel chan bool, clientConn net.Conn, targetConn net.Conn) {
 	io.Copy(clientConn, targetConn)
+	clientLoggers.Info.Println("TargetToClient closed for client", clientConn.RemoteAddr())
 	closeChannel <- true
 }
 
@@ -47,7 +48,9 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 		// read http request
 		request, err := http.ReadRequest(clientReader)
 		if err != nil {
-			clientLoggers.Error.Println("Error reading request:", err)
+			if err != io.EOF && !strings.Contains(err.Error(), "connection reset by peer") {
+				clientLoggers.Error.Println("Error reading request:", err)
+			}
 			break
 		}
 		// get config
@@ -115,6 +118,7 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 			break
 		}
 	}
+	clientLoggers.Info.Println("ClientToTarget closed for client", clientConn.RemoteAddr())
 	closeChannel <- true
 }
 
@@ -141,6 +145,7 @@ func HandleClientConnection(conn net.Conn, configManager *configuration.ConfigMa
 	go proxyTargetToClient(closeChannel, conn, targetConn)
 	go proxyClientToTarget(closeChannel, conn, targetConn, configManager)
 	// wait for the goroutines to finish
+	<-closeChannel
 	<-closeChannel
 	clientLoggers.Info.Println("Connection of client", conn.RemoteAddr(), "closed")
 }
