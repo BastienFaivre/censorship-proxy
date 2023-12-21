@@ -121,8 +121,6 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 				clientLoggers.Error.Println("Error writing request:", err)
 				break
 			}
-		} else {
-			clientLoggers.Warning.Println("Censored request:", request)
 		}
 	}
 	clientLoggers.Info.Println("ClientToTarget closed for client", clientConn.RemoteAddr())
