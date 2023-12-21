@@ -44,83 +44,77 @@ func proxyTargetToClient(closeChannel chan bool, clientConn net.Conn, targetConn
 func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn net.Conn, configManager *configuration.ConfigManager) {
 	clientReader := bufio.NewReader(clientConn)
 	// check censorship on each message
-	for {
-		// read http request
-		request, err := http.ReadRequest(clientReader)
+	// read http request
+	request, err := http.ReadRequest(clientReader)
+	if err != nil {
+		if err != io.EOF && !strings.Contains(err.Error(), "connection reset by peer") {
+			clientLoggers.Error.Println("Error reading request:", err)
+		}
+	}
+	// get config
+	config := configManager.GetConfig()
+	censored := false
+	if len(config.CensoredAddresses) > 0 {
+		// read body
+		body, err := io.ReadAll(request.Body)
 		if err != nil {
-			if err != io.EOF && !strings.Contains(err.Error(), "connection reset by peer") {
-				clientLoggers.Error.Println("Error reading request:", err)
-			}
-			break
+			clientLoggers.Error.Println("Error reading body:", err)
 		}
-		// get config
-		config := configManager.GetConfig()
-		censored := false
-		if len(config.CensoredAddresses) > 0 {
-			// read body
-			body, err := io.ReadAll(request.Body)
+		request.Body = io.NopCloser(bytes.NewBuffer(body))
+		// unmarshal body
+		var bodyMap map[string]interface{}
+		err = json.Unmarshal(body, &bodyMap)
+		if err != nil {
+			clientLoggers.Error.Println("Error unmarshalling body:", err)
+		}
+		// check censorship
+		switch bodyMap["method"] {
+		case "eth_sendTransaction":
+			// TODO: implement censorship
+		case "eth_sendRawTransaction":
+			signedTxn := bodyMap["params"].([]interface{})[0]
+			// remove the 0x prefix if present
+			if signedTxn.(string)[:2] == "0x" {
+				signedTxn = signedTxn.(string)[2:]
+			}
+			raw, err := hex.DecodeString(signedTxn.(string))
 			if err != nil {
-				clientLoggers.Error.Println("Error reading body:", err)
+				clientLoggers.Error.Println("Error decoding signed transaction:", err)
 				break
 			}
-			request.Body = io.NopCloser(bytes.NewBuffer(body))
-			// unmarshal body
-			var bodyMap map[string]interface{}
-			err = json.Unmarshal(body, &bodyMap)
+			var tx *types.Transaction
+			rlp.DecodeBytes(raw, &tx)
+			signer := types.NewEIP155Signer(tx.ChainId())
+			sender, err := signer.Sender(tx)
 			if err != nil {
-				clientLoggers.Error.Println("Error unmarshalling body:", err)
+				clientLoggers.Error.Println("Error getting sender:", err)
 				break
 			}
-			// check censorship
-			switch bodyMap["method"] {
-			case "eth_sendTransaction":
-				// TODO: implement censorship
-			case "eth_sendRawTransaction":
-				signedTxn := bodyMap["params"].([]interface{})[0]
-				// remove the 0x prefix if present
-				if signedTxn.(string)[:2] == "0x" {
-					signedTxn = signedTxn.(string)[2:]
+			senderFormatted := strings.ToLower(sender.Hex())
+			if senderFormatted[:2] == "0x" {
+				senderFormatted = senderFormatted[2:]
+			}
+			// check if the sender is censored
+			for _, address := range config.CensoredAddresses {
+				addressFormatted := strings.ToLower(address)
+				if addressFormatted[:2] == "0x" {
+					addressFormatted = addressFormatted[2:]
 				}
-				raw, err := hex.DecodeString(signedTxn.(string))
-				if err != nil {
-					clientLoggers.Error.Println("Error decoding signed transaction:", err)
+				if strings.EqualFold(senderFormatted, addressFormatted) {
+					clientLoggers.Warning.Println("Censored transaction from", sender.Hex())
+					censored = true
 					break
 				}
-				var tx *types.Transaction
-				rlp.DecodeBytes(raw, &tx)
-				signer := types.NewEIP155Signer(tx.ChainId())
-				sender, err := signer.Sender(tx)
-				if err != nil {
-					clientLoggers.Error.Println("Error getting sender:", err)
-					break
-				}
-				senderFormatted := strings.ToLower(sender.Hex())
-				if senderFormatted[:2] == "0x" {
-					senderFormatted = senderFormatted[2:]
-				}
-				// check if the sender is censored
-				for _, address := range config.CensoredAddresses {
-					addressFormatted := strings.ToLower(address)
-					if addressFormatted[:2] == "0x" {
-						addressFormatted = addressFormatted[2:]
-					}
-					if strings.EqualFold(senderFormatted, addressFormatted) {
-						clientLoggers.Warning.Println("Censored transaction from", sender.Hex())
-						censored = true
-						break
-					}
-				}
-			default:
-				clientLoggers.Warning.Println("Unknown method:", bodyMap["method"])
 			}
+		default:
+			clientLoggers.Warning.Println("Unknown method:", bodyMap["method"])
 		}
-		// write http request to target
-		if !censored {
-			err = request.Write(targetConn)
-			if err != nil {
-				clientLoggers.Error.Println("Error writing request:", err)
-				break
-			}
+	}
+	// write http request to target
+	if !censored {
+		err = request.Write(targetConn)
+		if err != nil {
+			clientLoggers.Error.Println("Error writing request:", err)
 		}
 	}
 	clientLoggers.Info.Println("ClientToTarget closed for client", clientConn.RemoteAddr())
