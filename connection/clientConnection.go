@@ -111,6 +111,7 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 					}
 				}
 			default:
+				clientLoggers.Warning.Println("Unknown method:", bodyMap["method"])
 			}
 		}
 		// write http request to target
