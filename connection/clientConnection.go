@@ -55,6 +55,7 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 		}
 		// get config
 		config := configManager.GetConfig()
+		censored := false
 		if len(config.CensoredAddresses) > 0 {
 			// read body
 			body, err := io.ReadAll(request.Body)
@@ -105,6 +106,7 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 					}
 					if strings.EqualFold(senderFormatted, addressFormatted) {
 						clientLoggers.Warning.Println("Censored transaction from", sender.Hex())
+						censored = true
 						break
 					}
 				}
@@ -112,10 +114,12 @@ func proxyClientToTarget(closeChannel chan bool, clientConn net.Conn, targetConn
 			}
 		}
 		// write http request to target
-		err = request.Write(targetConn)
-		if err != nil {
-			clientLoggers.Error.Println("Error writing request:", err)
-			break
+		if !censored {
+			err = request.Write(targetConn)
+			if err != nil {
+				clientLoggers.Error.Println("Error writing request:", err)
+				break
+			}
 		}
 	}
 	clientLoggers.Info.Println("ClientToTarget closed for client", clientConn.RemoteAddr())
