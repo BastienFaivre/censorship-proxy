@@ -23,7 +23,9 @@ type Loggers struct {
 func GetLoggers(filepath string) (*Loggers, *Loggers, error) {
 	var output io.Writer
 	// if the filepath is empty, use stdout
-	if filepath == "" {
+	if os.Getenv("LOGS") == "no" {
+		output = io.Discard
+	} else if filepath == "" {
 		output = os.Stdout
 	} else {
 		file, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
